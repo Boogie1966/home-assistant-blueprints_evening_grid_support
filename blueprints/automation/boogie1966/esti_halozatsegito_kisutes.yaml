@@ -1,0 +1,265 @@
+blueprint:
+  name: Esti hálózatsegítő akkumulátor-kisütés (általános)
+  description: >
+    Esti csúcsidőben (alapértelmezés: 19:00–22:00) a háztartási tárolóból
+    a beállított tartalék töltöttségig kisüt / hálózatra táplál, majd
+    garantáltan visszaáll a normál üzemmódba.
+
+    Gyártófüggetlen: az inverter-specifikus parancsokat az "Indító parancsok",
+    "Teljesítmény-visszavétel" és "Leállító parancsok" mezőkben te add meg
+    (Victron / Solax / Deye / Huawei / SolarEdge / Sungrow stb.).
+
+    Beépített védelmek:
+      - véletlenszerű indítási szórás, hogy ne induljon mindenki egyszerre;
+      - minimális induló SoC és tartalék SoC;
+      - opcionális holnapi termelés-előrejelzés feltétel;
+      - HA újraindítás utáni önjavítás (ablakon belül folytat, kívül leállít);
+      - a leállítás feltétel nélkül lefut (idempotens visszaállás).
+
+    FONTOS: csak érvényes hálózati betáplálási engedéllyel használd, és a
+    tárolót kizárólag napelemből töltsd.
+  domain: automation
+  homeassistant:
+    min_version: "2024.6.0"
+  input:
+    soc_sensor:
+      name: Akkumulátor töltöttség (SoC) szenzor
+      description: A tároló töltöttségét százalékban mutató szenzor.
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: battery
+
+    start_time:
+      name: Ablak kezdete
+      description: A csúcsidőszak kezdete. Magyarországon nyáron 19:00 a jó alapérték.
+      default: "19:00:00"
+      selector:
+        time: {}
+
+    taper_time:
+      name: Teljesítmény-visszavétel ideje
+      description: >
+        Ekkor fut le a "Teljesítmény-visszavétel" parancslista (pl. feleakkora
+        kisütési teljesítmény), hogy a leállás ne legyen hirtelen lépcső.
+        Ha nem kell, hagyd üresen a hozzá tartozó parancslistát.
+      default: "21:45:00"
+      selector:
+        time: {}
+
+    end_time:
+      name: Ablak vége
+      default: "22:00:00"
+      selector:
+        time: {}
+
+    random_minutes:
+      name: Véletlen indítási szórás (perc)
+      description: >
+        0 és ennyi perc között véletlenszerű késleltetéssel indul.
+        Ez akadályozza meg, hogy több ezer háztartás egyszerre lépjen be
+        és lépcsőt okozzon a rendszerben. Javasolt: 30–60 perc.
+      default: 45
+      selector:
+        number:
+          min: 0
+          max: 90
+          step: 1
+          unit_of_measurement: perc
+          mode: slider
+
+    min_soc_start:
+      name: Minimális induló töltöttség (%)
+      description: Ez alatt aznap el sem indul a kisütés.
+      default: 70
+      selector:
+        number:
+          min: 20
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    reserve_soc:
+      name: Tartalék töltöttség (%)
+      description: >
+        Ez alá nem megy. Hagyj tartalékot a saját éjszakai/reggeli fogyasztásra
+        és a szünetmentes funkcióra. Javasolt: 25–35%.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 90
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    forecast_sensor:
+      name: Holnapi napelem-előrejelzés szenzor (opcionális)
+      description: >
+        Pl. Forecast.Solar vagy Solcast "holnapi termelés" szenzora (kWh).
+        Ha meg van adva, borús holnapra tervezve nem üríti ki az akkut.
+        Hagyd üresen, ha nem használsz ilyet.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    min_forecast_kwh:
+      name: Minimális holnapi termelés (kWh)
+      description: Csak akkor számít, ha fent megadtál előrejelzés szenzort.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 150
+          step: 1
+          unit_of_measurement: kWh
+          mode: box
+
+    extra_conditions:
+      name: További feltételek (opcionális)
+      description: >
+        Pl. "input_boolean.halozatsegites be van kapcsolva", "nincs itthon
+        vendég", "az e-autó nem töltődik", "nyári hónap van".
+      default: []
+      selector:
+        condition: {}
+
+    start_actions:
+      name: Indító parancsok (inverter-specifikus)
+      description: >
+        Itt kapcsold az invertert kisütés/export módba. Példák a dokumentációban.
+      default: []
+      selector:
+        action: {}
+
+    taper_actions:
+      name: Teljesítmény-visszavétel parancsok (opcionális)
+      description: Pl. a kisütési teljesítmény felezése a leállás előtt.
+      default: []
+      selector:
+        action: {}
+
+    stop_actions:
+      name: Leállító parancsok (inverter-specifikus)
+      description: >
+        Visszaállás a normál (öntfogyasztás-optimalizált) üzemmódba.
+        Ez feltétel nélkül lefut, hogy az inverter soha ne ragadjon bent
+        export módban.
+      default: []
+      selector:
+        action: {}
+
+variables:
+  soc_entity: !input soc_sensor
+  reserve: !input reserve_soc
+  min_start: !input min_soc_start
+  rnd: !input random_minutes
+  fc_entity: !input forecast_sensor
+  fc_min: !input min_forecast_kwh
+  t_start: !input start_time
+  t_end: !input end_time
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: time
+    at: !input start_time
+    id: start
+  - platform: homeassistant
+    event: start
+    id: resume
+  - platform: time
+    at: !input taper_time
+    id: taper
+  - platform: time
+    at: !input end_time
+    id: stop
+  - platform: numeric_state
+    entity_id: !input soc_sensor
+    below: !input reserve_soc
+    id: stop
+
+condition: []
+
+action:
+  - choose:
+      # ---------------------------------------------------------------
+      # 1) INDÍTÁS – időzített start vagy HA-újraindítás az ablakon belül
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id:
+              - start
+              - resume
+          - condition: template
+            value_template: >
+              {{ now() >= today_at(t_start) and now() < today_at(t_end) }}
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) not in ['unknown', 'unavailable', 'none', ''] }}
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) | float(0) >= (min_start | float(70)) }}
+          - condition: template
+            value_template: >
+              {{ fc_entity in [none, ''] or
+                 states(fc_entity) | float(0) >= (fc_min | float(0)) }}
+          - condition: and
+            conditions: !input extra_conditions
+        sequence:
+          # Véletlen szórás – csak időzített indulásnál, újraindulás után nem.
+          - delay:
+              seconds: >
+                {{ (range(0, (rnd | int(0)) * 60 + 1) | random)
+                   if trigger.id == 'start' else 0 }}
+          # A késleltetés alatt változhatott a helyzet – újraellenőrzés.
+          - condition: template
+            value_template: >
+              {{ now() < today_at(t_end) }}
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) | float(0) > (reserve | float(30)) }}
+          - choose: []
+            default: !input start_actions
+
+      # ---------------------------------------------------------------
+      # 2) HA-újraindítás az ablakon KÍVÜL – biztonsági visszaállítás
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id: resume
+          - condition: template
+            value_template: >
+              {{ not (now() >= today_at(t_start) and now() < today_at(t_end)) }}
+        sequence:
+          - choose: []
+            default: !input stop_actions
+
+      # ---------------------------------------------------------------
+      # 3) TELJESÍTMÉNY-VISSZAVÉTEL a leállás előtt
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id: taper
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) | float(0) > (reserve | float(30)) }}
+        sequence:
+          - choose: []
+            default: !input taper_actions
+
+      # ---------------------------------------------------------------
+      # 4) LEÁLLÍTÁS – idő letelt vagy elértük a tartalék SoC-t
+      #    Feltétel nélkül fut, hogy az inverter ne ragadjon export módban.
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id: stop
+        sequence:
+          - choose: []
+            default: !input stop_actions

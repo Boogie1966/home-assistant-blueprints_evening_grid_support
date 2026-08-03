@@ -1,0 +1,268 @@
+blueprint:
+  name: Evening grid-support battery discharge (vendor-agnostic)
+  description: >
+    Discharges your home battery to the grid during the evening peak
+    (default 19:00-22:00), down to a configurable reserve SoC, then
+    reliably restores normal operation.
+
+    Vendor-agnostic: the inverter-specific commands are supplied by you in the
+    "Start actions", "Taper actions" and "Stop actions" inputs, so the same
+    blueprint works on Victron, Solax, Deye, Huawei, SolarEdge, Sungrow, etc.
+    Starting examples for all of these are in the repository docs.
+
+    Built-in safeguards:
+      - random start jitter, so thousands of homes don't engage simultaneously;
+      - minimum starting SoC and reserve SoC;
+      - optional tomorrow-PV-forecast condition;
+      - self-healing after a Home Assistant restart (resumes inside the
+        window, stops outside it);
+      - the stop path runs unconditionally, so the inverter can never get
+        stuck in export mode.
+
+    IMPORTANT: only use this if grid export is permitted for your installation,
+    and charge the battery from PV only. Grid-charging and re-selling is
+    licensed energy trading in most jurisdictions.
+  domain: automation
+  homeassistant:
+    min_version: "2024.6.0"
+  input:
+    soc_sensor:
+      name: Battery state of charge (SoC) sensor
+      description: Sensor reporting your battery SoC in percent.
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: battery
+
+    start_time:
+      name: Window start
+      description: Start of the evening peak period.
+      default: "19:00:00"
+      selector:
+        time: {}
+
+    taper_time:
+      name: Taper time
+      description: >
+        When the "Taper actions" run (e.g. halve the discharge power), so the
+        shutdown is not an abrupt step. Leave the taper actions empty to skip.
+      default: "21:45:00"
+      selector:
+        time: {}
+
+    end_time:
+      name: Window end
+      default: "22:00:00"
+      selector:
+        time: {}
+
+    random_minutes:
+      name: Random start jitter (minutes)
+      description: >
+        Starts after a random delay between 0 and this many minutes.
+        This prevents thousands of homes engaging at the exact same second and
+        creating a step change for the grid operator. Recommended: 30-60.
+      default: 45
+      selector:
+        number:
+          min: 0
+          max: 90
+          step: 1
+          unit_of_measurement: min
+          mode: slider
+
+    min_soc_start:
+      name: Minimum starting SoC (%)
+      description: Below this, the discharge does not start at all.
+      default: 70
+      selector:
+        number:
+          min: 20
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    reserve_soc:
+      name: Reserve SoC (%)
+      description: >
+        Never discharge below this. Leave headroom for your own overnight and
+        morning consumption, and for backup/UPS duty. Recommended: 25-35.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 90
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
+    forecast_sensor:
+      name: Tomorrow's PV forecast sensor (optional)
+      description: >
+        E.g. a Forecast.Solar or Solcast "energy production tomorrow" sensor
+        (kWh). If set, the battery is not emptied ahead of a cloudy day.
+        Leave empty if you don't use one.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    min_forecast_kwh:
+      name: Minimum forecast for tomorrow (kWh)
+      description: Only relevant if a forecast sensor is selected above.
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 150
+          step: 1
+          unit_of_measurement: kWh
+          mode: box
+
+    extra_conditions:
+      name: Additional conditions (optional)
+      description: >
+        E.g. "input_boolean.grid_support is on", "the EV is not charging",
+        "it is a summer month".
+      default: []
+      selector:
+        condition: {}
+
+    start_actions:
+      name: Start actions (inverter-specific)
+      description: >
+        Put your inverter into discharge/export mode here.
+        See the repository docs for per-brand examples.
+      default: []
+      selector:
+        action: {}
+
+    taper_actions:
+      name: Taper actions (optional)
+      description: E.g. halve the discharge power before the hard stop.
+      default: []
+      selector:
+        action: {}
+
+    stop_actions:
+      name: Stop actions (inverter-specific)
+      description: >
+        Return the inverter to its normal self-consumption mode.
+        This runs unconditionally so the inverter never gets stuck exporting.
+      default: []
+      selector:
+        action: {}
+
+variables:
+  soc_entity: !input soc_sensor
+  reserve: !input reserve_soc
+  min_start: !input min_soc_start
+  rnd: !input random_minutes
+  fc_entity: !input forecast_sensor
+  fc_min: !input min_forecast_kwh
+  t_start: !input start_time
+  t_end: !input end_time
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: time
+    at: !input start_time
+    id: start
+  - platform: homeassistant
+    event: start
+    id: resume
+  - platform: time
+    at: !input taper_time
+    id: taper
+  - platform: time
+    at: !input end_time
+    id: stop
+  - platform: numeric_state
+    entity_id: !input soc_sensor
+    below: !input reserve_soc
+    id: stop
+
+condition: []
+
+action:
+  - choose:
+      # ---------------------------------------------------------------
+      # 1) START - scheduled start, or HA restart inside the window
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id:
+              - start
+              - resume
+          - condition: template
+            value_template: >
+              {{ now() >= today_at(t_start) and now() < today_at(t_end) }}
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) not in ['unknown', 'unavailable', 'none', ''] }}
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) | float(0) >= (min_start | float(70)) }}
+          - condition: template
+            value_template: >
+              {{ fc_entity in [none, ''] or
+                 states(fc_entity) | float(0) >= (fc_min | float(0)) }}
+          - condition: and
+            conditions: !input extra_conditions
+        sequence:
+          # Jitter only on the scheduled start, not when resuming after a restart.
+          - delay:
+              seconds: >
+                {{ (range(0, (rnd | int(0)) * 60 + 1) | random)
+                   if trigger.id == 'start' else 0 }}
+          # Things may have changed during the delay - re-check.
+          - condition: template
+            value_template: >
+              {{ now() < today_at(t_end) }}
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) | float(0) > (reserve | float(30)) }}
+          - choose: []
+            default: !input start_actions
+
+      # ---------------------------------------------------------------
+      # 2) HA restart OUTSIDE the window - safety restore
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id: resume
+          - condition: template
+            value_template: >
+              {{ not (now() >= today_at(t_start) and now() < today_at(t_end)) }}
+        sequence:
+          - choose: []
+            default: !input stop_actions
+
+      # ---------------------------------------------------------------
+      # 3) TAPER before the hard stop
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id: taper
+          - condition: template
+            value_template: >
+              {{ states(soc_entity) | float(0) > (reserve | float(30)) }}
+        sequence:
+          - choose: []
+            default: !input taper_actions
+
+      # ---------------------------------------------------------------
+      # 4) STOP - window ended or reserve SoC reached.
+      #    Unconditional, so the inverter never stays in export mode.
+      # ---------------------------------------------------------------
+      - conditions:
+          - condition: trigger
+            id: stop
+        sequence:
+          - choose: []
+            default: !input stop_actions
