@@ -14,7 +14,7 @@ If your home battery is still partly full every morning, that stored energy is s
 
 ### Vendor-agnostic by design
 
-The blueprint provides only the **logic** — scheduling, jitter, SoC guards, error handling, restoration. The inverter-specific commands go into three `action` selector inputs, so the same file works on Victron, Solax, Deye/Sunsynk, Huawei, SolarEdge and Sungrow.
+The blueprint provides only the **logic** — scheduling, jitter, SoC guards, error handling, restoration. The inverter-specific commands go into three `action` selector inputs, so the same file works on Victron, Solax, Deye/Sunsynk, Huawei, SolarEdge, Sungrow and Growatt.
 
 👉 **[Per-brand starting examples: docs/inverter-examples.md](docs/inverter-examples.md)**
 
