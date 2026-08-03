@@ -1,0 +1,197 @@
+# =============================================================================
+#  Esti hálózatsegítés – hozzájárulás-számláló csomag
+#  Home Assistant package · 2026-08-03
+#
+#  Helye:  config/packages/esti_halozatsegites.yaml
+#  A configuration.yaml-ben legyen:
+#      homeassistant:
+#        packages: !include_dir_named packages
+#
+#  ---------------------------------------------------------------------------
+#  MIT MÉR?
+#  Csak az esti ablakban (19:00-22:00) a hálózatra táplált, AKKUMULÁTORBÓL
+#  származó energiát. A trükk: min(betáplálás, akku-kisütés) - így az ablakban
+#  még sütő napelem közvetlen betáplálása nem számít bele.
+#
+#  ---------------------------------------------------------------------------
+#  ÁTÍRANDÓ (2 db entitás):
+#    sensor.grid_export_power        -> a hálózatra táplált pillanatnyi telj. (W)
+#    sensor.battery_discharge_power  -> az akku kisütési teljesítménye (W)
+#
+#  Keresd meg őket: Fejlesztői eszközök -> Állapotok
+#  Ha csak EGY előjeles hálózati teljesítmény szenzorod van (negatív = export),
+#  lásd az alternatív template-et a fájl alján.
+# =============================================================================
+
+input_boolean:
+  halozatsegites_engedelyezve:
+    name: Esti hálózatsegítés engedélyezve
+    icon: mdi:transmission-tower-export
+
+input_number:
+  halozatsegites_betaplalasi_ar:
+    name: Betáplálási ár
+    min: 0
+    max: 100
+    step: 0.01
+    unit_of_measurement: Ft/kWh
+    icon: mdi:cash
+    mode: box
+    # Elosztónként: E.ON/OPUS 4,39 · ÉMÁSZ 4,94 · ELMŰ 5,11 · DÉMÁSZ 5,25
+
+template:
+  - sensor:
+      # -----------------------------------------------------------------
+      # Az akkumulátorból származó, esti ablakban betáplált teljesítmény.
+      # Az ablakon kívül mindig 0, így a rá épülő integrál sem nő.
+      # A now() miatt a template percenként újraértékelődik.
+      # -----------------------------------------------------------------
+      - name: Hálózatsegítés teljesítmény
+        unique_id: halozatsegites_teljesitmeny
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set export_w = states('sensor.grid_export_power') | float(0) %}
+          {% set batt_w = states('sensor.battery_discharge_power') | float(0) %}
+          {% set ablakban = today_at('19:00') <= now() < today_at('22:00') %}
+          {% if ablakban %}
+            {{ [ [export_w, batt_w] | min, 0 ] | max | round(0) }}
+          {% else %}
+            0
+          {% endif %}
+        availability: >
+          {{ states('sensor.grid_export_power') not in
+             ['unknown', 'unavailable', 'none'] }}
+
+      # -----------------------------------------------------------------
+      # Származtatott mutatók
+      # -----------------------------------------------------------------
+      - name: Hálózatsegítés bevétel (havi)
+        unique_id: halozatsegites_bevetel_havi
+        unit_of_measurement: Ft
+        state_class: total
+        state: >
+          {{ (states('sensor.esti_halozatsegites_havi') | float(0)
+              * states('input_number.halozatsegites_betaplalasi_ar') | float(5))
+             | round(0) }}
+
+      - name: Hálózatsegítés elkerült CO2 (összesen)
+        unique_id: halozatsegites_co2_osszes
+        unit_of_measurement: kg
+        state_class: total_increasing
+        # 0,45 kg CO2/kWh - kiváltott gázos csúcstermelés becsült fajlagosa
+        state: >
+          {{ (states('sensor.esti_halozatsegites_osszes') | float(0) * 0.45)
+             | round(2) }}
+
+  - binary_sensor:
+      - name: Hálózatsegítés aktív
+        unique_id: halozatsegites_aktiv
+        icon: mdi:transmission-tower-export
+        state: >
+          {{ states('sensor.halozatsegites_teljesitmeny') | float(0) > 50 }}
+
+sensor:
+  # -------------------------------------------------------------------------
+  # Riemann-integrál: W -> kWh.
+  # A max_sub_interval biztosítja, hogy akkor is lépjen, ha a forrás
+  # sokáig nem frissül (pl. konstans teljesítmény).
+  # -------------------------------------------------------------------------
+  - platform: integration
+    source: sensor.halozatsegites_teljesitmeny
+    name: Hálózatsegítés energia
+    unique_id: halozatsegites_energia
+    unit_prefix: k
+    unit_time: h
+    method: left
+    round: 3
+    max_sub_interval: "00:01:00"
+
+  # -------------------------------------------------------------------------
+  # Mennyi ideig futott ténylegesen
+  # -------------------------------------------------------------------------
+  - platform: history_stats
+    name: Hálózatsegítés aktív idő (havi)
+    unique_id: halozatsegites_ido_havi
+    entity_id: binary_sensor.halozatsegites_aktiv
+    state: "on"
+    type: time
+    start: "{{ now().replace(day=1, hour=0, minute=0, second=0, microsecond=0) }}"
+    end: "{{ now() }}"
+
+  - platform: history_stats
+    name: Hálózatsegítés napok száma (havi)
+    unique_id: halozatsegites_napok_havi
+    entity_id: binary_sensor.halozatsegites_aktiv
+    state: "on"
+    type: count
+    start: "{{ now().replace(day=1, hour=0, minute=0, second=0, microsecond=0) }}"
+    end: "{{ now() }}"
+
+utility_meter:
+  esti_halozatsegites_napi:
+    name: Esti hálózatsegítés (napi)
+    source: sensor.halozatsegites_energia
+    cycle: daily
+
+  esti_halozatsegites_havi:
+    name: Esti hálózatsegítés (havi)
+    source: sensor.halozatsegites_energia
+    cycle: monthly
+
+  esti_halozatsegites_osszes:
+    name: Esti hálózatsegítés (összesen)
+    source: sensor.halozatsegites_energia
+
+# =============================================================================
+#  ALTERNATÍV TEMPLATE - ha egyetlen előjeles hálózati szenzorod van
+#  (negatív érték = betáplálás). Cseréld le vele a fenti "state:" blokkot:
+#
+#        state: >
+#          {% set grid_w = states('sensor.grid_power') | float(0) %}
+#          {% set export_w = [ -grid_w, 0 ] | max %}
+#          {% set batt_w = states('sensor.battery_power') | float(0) %}
+#          {% set batt_w = [ batt_w, 0 ] | max %}
+#          {% set ablakban = today_at('19:00') <= now() < today_at('22:00') %}
+#          {{ ([export_w, batt_w] | min | round(0)) if ablakban else 0 }}
+#
+#  (Ha nálad az akku kisütése NEGATÍV, akkor ott is fordíts előjelet.)
+# =============================================================================
+
+# =============================================================================
+#  DASHBOARD KÁRTYA - másold be egy manuális kártyába
+#
+#  type: vertical-stack
+#  cards:
+#    - type: entities
+#      title: Esti hálózatsegítés
+#      entities:
+#        - entity: input_boolean.halozatsegites_engedelyezve
+#          name: Engedélyezve
+#        - entity: binary_sensor.halozatsegites_aktiv
+#          name: Épp fut
+#        - entity: sensor.halozatsegites_teljesitmeny
+#          name: Pillanatnyi
+#        - type: divider
+#        - entity: sensor.esti_halozatsegites_napi
+#          name: Ma
+#        - entity: sensor.esti_halozatsegites_havi
+#          name: Ebben a hónapban
+#        - entity: sensor.esti_halozatsegites_osszes
+#          name: Összesen
+#        - type: divider
+#        - entity: sensor.halozatsegites_napok_havi
+#          name: Hány estén futott
+#        - entity: sensor.halozatsegites_bevetel_havi
+#          name: Ebből bevétel
+#        - entity: sensor.halozatsegites_elkerult_co2_osszesen
+#          name: Elkerült CO2
+#    - type: statistic
+#      entity: sensor.esti_halozatsegites_napi
+#      period:
+#        calendar:
+#          period: month
+#      stat_type: sum
+#      name: Havi összeg
+# =============================================================================
