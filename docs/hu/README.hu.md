@@ -16,7 +16,7 @@ Akinek van tárolója és **reggelre rendszeresen marad benne töltés**, az ezt
 
 ## Miért gyártófüggetlen?
 
-A blueprint csak a **logikát** adja: időzítés, szórás, SoC-védelem, hibakezelés, visszaállás. Az inverter-specifikus parancsokat te töltöd ki három akciómezőben. Ugyanaz a fájl megy Victronon, Solaxon, Deye/Sunsynken, Huaweien, SolarEdge-en, Sungrow-on.
+A blueprint csak a **logikát** adja: időzítés, szórás, SoC-védelem, hibakezelés, visszaállás. Az inverter-specifikus parancsokat te töltöd ki három akciómezőben. Ugyanaz a fájl megy Victronon, Solaxon, Deye/Sunsynken, Huaweien, SolarEdge-en, Sungrow-on, Growatton.
 
 👉 **[Márkánkénti kiindulási példák (angol): ../inverter-examples.md](../inverter-examples.md)**
 
