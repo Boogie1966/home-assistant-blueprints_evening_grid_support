@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/siot-logo-horizontal-dark.svg">
+    <img src="docs/brand/siot-logo-horizontal.svg" alt="S/IoT" width="300">
+  </picture>
+</p>
+
 # Home Assistant Blueprints
 
 Blueprints and packages for Home Assistant. *Magyar leírás: [docs/hu/README.hu.md](docs/hu/README.hu.md)*
